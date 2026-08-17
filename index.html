@@ -16,6 +16,17 @@
       html, body, #root { height: 100%; margin: 0; background:#0E0E0E; }
       *{ box-sizing:border-box; }
     </style>
+    <script>
+      if (typeof Object.hasOwn !== 'function') {
+        Object.defineProperty(Object, 'hasOwn', {
+          value: function (object, property) {
+            return Object.prototype.hasOwnProperty.call(object, property)
+          },
+          configurable: true,
+          writable: true
+        })
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

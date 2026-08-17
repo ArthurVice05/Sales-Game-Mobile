@@ -109,16 +109,20 @@ export function readOrientation() {
 /**
  * Mobile/tablet onde faz sentido exigir landscape.
  * Evita bloquear desktop com janela estreita (pointer fine).
+ * Capacitor nativo entra mesmo se o WebView mentir pointer: coarse.
  */
 export function shouldEnforceLandscape() {
   if (typeof window === 'undefined') return false
   try {
+    const isNativeCapacitor =
+      typeof window.Capacitor?.isNativePlatform === 'function'
+      && window.Capacitor.isNativePlatform()
     const coarse = typeof window.matchMedia === 'function'
       && window.matchMedia('(pointer: coarse)').matches
     const narrow = typeof window.matchMedia === 'function'
       ? window.matchMedia('(max-width: 960px)').matches
       : window.innerWidth <= 960
-    return Boolean(coarse && narrow)
+    return Boolean(narrow && (isNativeCapacitor || coarse))
   } catch {
     return false
   }

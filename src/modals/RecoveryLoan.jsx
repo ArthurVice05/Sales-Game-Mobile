@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import S from './recoveryStyles'
+import { MANUAL_CONSTANTS } from '../game/manualConstants.js'
+import { loanChargeAmount } from '../game/loanCycle.js'
 
 /**
  * Props
@@ -14,7 +16,7 @@ import S from './recoveryStyles'
  *     amount: <valor>,
  *     // aplique no jogador: cash += amount
  *     cashDelta: <valor>,
- *     // marque para cobrança na próxima "Despesas Operacionais"
+ *     // marque para cobrança na casa Despesas Operacionais da próxima rodada
  *     loan: { amount: <valor>, charged: false }
  *   }
  * Caso já exista um empréstimo, envia:
@@ -34,6 +36,8 @@ export default function RecoveryLoan({
   )
   const canConfirm =
     !alreadyHasLoan && parsed > 0 && parsed <= Number(loanAvailable || 0)
+  const interestPct = Math.round((MANUAL_CONSTANTS.loanInterestRatio || 0) * 100)
+  const repayAmount = parsed > 0 ? loanChargeAmount({ amount: parsed }) : 0
 
   const confirm = () => {
     // Bloqueia se já houver empréstimo marcado
@@ -70,8 +74,13 @@ export default function RecoveryLoan({
       </div>
 
       <p>
-        Aumenta o caixa agora para evitar falência. Você coloca <b>50% dos seus BENS</b> como
-        garantia (cobrada na próxima “Despesas Operacionais”).
+        Único empréstimo da partida. O banco libera até <b>50% do valor de compra dos seus bens</b> como
+        garantia. Na casa <b>Despesas Operacionais da próxima rodada</b> você devolve o valor
+        <b> + {interestPct}% de juros</b>.
+      </p>
+      <p>
+        Se não houver caixa para quitar, use o patrimônio: cada item vale
+        <b> 50% do valor pago na compra</b>. Se ainda assim não der para pagar e continuar, é falência.
       </p>
 
       <div style={S.infoRow}>
@@ -108,9 +117,14 @@ export default function RecoveryLoan({
       />
 
       <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
-        Máx: ${Number(loanAvailable || 0)} — valor será somado ao seu saldo e
-        cobrado na próxima “Despesas Operacionais”.
+        Máx: ${Number(loanAvailable || 0)} — entra no caixa agora. Na próxima rodada
+        cobra o valor + {interestPct}% de juros.
       </div>
+      {repayAmount > 0 && (
+        <div style={{ ...S.infoRow, marginTop: 8 }}>
+          <span>A pagar na próxima rodada:</span> <b>${repayAmount}</b>
+        </div>
+      )}
 
       <div style={S.rowBtns}>
         <button style={S.back} onClick={onBack}>

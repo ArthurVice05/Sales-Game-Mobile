@@ -20,6 +20,7 @@ import {
   armLoanAfterRevenue,
   applyLoanCharge,
   shouldChargeLoan,
+  loanChargeAmount,
   buildRecoveryFireDeltas,
   computeRecoveryFireCredit,
 } from '../loanCycle.js'
@@ -82,6 +83,23 @@ test('pt2 gestor boost: máx 3 certs = 40%; 4 não sobe', () => {
   )
 })
 
+test('training vazio no Direito de Compra: Voltar reabre DirectBuy', () => {
+  const training = read('src/modals/TrainingModal.jsx')
+  const start = training.indexOf('{noTypesLeft ? (')
+  const end = training.indexOf(') : (', start)
+  assert.ok(start >= 0 && end > start, 'ramo noTypesLeft ausente')
+  const emptyBranch = training.slice(start, end)
+  assert.match(emptyBranch, /allowBack &&/)
+  assert.match(emptyBranch, />Voltar</)
+  assert.match(emptyBranch, /handleBack/)
+
+  const eng = read('src/game/useTurnEngine.jsx')
+  assert.match(
+    eng,
+    /open === 'TRAINING'[\s\S]{0,1200}allowBack=\{true\}[\s\S]{0,400}r2\.action === 'BACK'[\s\S]{0,180}DirectBuyModal/,
+  )
+})
+
 // --- pt3: kit inicial ---
 test('pt3 kit start: 18k / 4k / fat 770 / desp 1150', () => {
   assert.equal(MANUAL_CONSTANTS.startCash, 18000)
@@ -93,46 +111,61 @@ test('pt3 kit start: 18k / 4k / fat 770 / desp 1150', () => {
 })
 
 // --- pt4: empréstimo ---
-test('pt4 empréstimo: take → arm → charge → bloqueia 2ª', () => {
-  let p = { id: 'p1', cash: 500, bens: 4000, loanTakenInMatch: false, loanPending: null }
+test('pt4 empréstimo: take → próxima rodada cobra principal+50% juros → bloqueia 2ª', () => {
+  assert.equal(MANUAL_CONSTANTS.loanInterestRatio, 0.5)
+  assert.equal(loanChargeAmount({ amount: 2000 }), 3000)
+
+  let p = { id: 'p1', cash: 1500, bens: 4000, loanTakenInMatch: false, loanPending: null }
   assert.equal(canTakeLoan(p), true)
 
   const taken = applyLoanTake(p, 2000, 1)
   assert.equal(taken.ok, true)
   p = taken.player
-  assert.equal(p.cash, 2500)
+  assert.equal(p.cash, 3500)
   assert.equal(p.loanTakenInMatch, true)
   assert.equal(p.loanPending.waitingFullLap, true)
   assert.equal(p.loanPending.eligibleOnExpenses, false)
+  assert.equal(p.loanPending.dueRound, 2)
 
-  // Antes de armar: não cobra
-  let charge = applyLoanCharge(p)
+  const pending = { ...p.loanPending, loanId: 'loan:p1:1' }
+
+  // Mesma rodada: não cobra
+  assert.equal(
+    shouldChargeLoan({ loanPending: pending, lastChargedLoanId: null, currentRound: 1 }),
+    false,
+  )
+  let charge = applyLoanCharge({ ...p, loanPending: pending }, { currentRound: 1 })
   assert.equal(charge.charged, false)
 
   // 2ª tentativa bloqueada
   assert.equal(canTakeLoan(p), false)
   assert.equal(applyLoanTake(p, 1000, 2).ok, false)
 
-  // Após faturamento (volta): arma
-  p = {
-    ...p,
-    loanPending: armLoanAfterRevenue(p.loanPending),
-  }
-  assert.equal(p.loanPending.eligibleOnExpenses, true)
+  // Próxima rodada (Despesas): cobra valor + 50% de juros
   assert.equal(
-    shouldChargeLoan({ loanPending: { ...p.loanPending, loanId: 'loan:p1:1' }, lastChargedLoanId: null }),
+    shouldChargeLoan({ loanPending: pending, lastChargedLoanId: null, currentRound: 2 }),
     true,
   )
-
-  charge = applyLoanCharge({ ...p, loanPending: { ...p.loanPending, loanId: 'loan:p1:1' } })
+  charge = applyLoanCharge({ ...p, loanPending: pending }, { currentRound: 2 })
   assert.equal(charge.charged, true)
-  assert.equal(charge.amount, 2000)
+  assert.equal(charge.amount, 3000)
   assert.equal(charge.player.cash, 500)
   assert.equal(charge.player.loanPending, null)
   assert.equal(charge.player.lastChargedLoanId, 'loan:p1:1')
 
   // Ainda bloqueado na partida
   assert.equal(canTakeLoan(charge.player), false)
+
+  // Caminho legado: armar no faturamento também libera a cobrança
+  const armed = armLoanAfterRevenue(taken.player.loanPending)
+  assert.equal(armed.eligibleOnExpenses, true)
+  assert.equal(
+    shouldChargeLoan({
+      loanPending: { ...armed, loanId: 'loan:p1:arm' },
+      lastChargedLoanId: null,
+    }),
+    true,
+  )
 })
 
 test('pt4b empréstimo: clamp ao teto de 50% dos bens', () => {
@@ -207,4 +240,23 @@ test('pt8b motor usa loanCycle (wiring)', () => {
   assert.match(eng, /applyLoanTake/)
   assert.match(eng, /armLoanAfterRevenue/)
   assert.match(eng, /shouldChargeLoan/)
+  assert.match(eng, /currentRound:\s*currentRoundRef\.current/)
+})
+
+test('pt9 skip de turno não corta o dado 3D', () => {
+  const eng = read('src/game/useTurnEngine.jsx')
+  assert.match(eng, /shouldRejectAbsentTurnSkip/)
+  const app = read('src/App.jsx')
+  assert.match(app, /setTurnLockBroadcast\(true, String\(myUid\)\)/)
+  assert.match(app, /ROLL descartado/)
+  assert.match(app, /onAction\(act\)/)
+  assert.match(app, /pendingAction: null/)
+  assert.match(app, /sanitizeTurnDeadlineOnHandoff/)
+  const presence = read('src/game/useGamePresenceAutoSkip.js')
+  assert.match(presence, /shouldAttemptPresenceAutoSkip/)
+  assert.match(presence, /turnLock:/)
+  assert.match(presence, /hud-wait|hud-only-wait/)
+  assert.doesNotMatch(presence, /reason: 'AUTO_SKIP_OFFLINE'/)
+  const timer = read('src/game/useTurnTimerAutoPass.js')
+  assert.match(timer, /shouldArmTimerSkipForTurn/)
 })

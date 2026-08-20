@@ -1,4 +1,5 @@
-// Presença durante a partida + auto-skip do turno do jogador ausente.
+// Presença durante a partida (heartbeat + HUD de ausência).
+// NÃO avança turno por last_seen — isso pulava celular em mesa de 4.
 // Reutiliza lobby_players.last_seen (não toca rooms.state no heartbeat).
 
 import { useEffect, useRef } from 'react'
@@ -15,15 +16,15 @@ import {
   resolveGamePresencePlayerId,
   isTurnPlayerPresent,
   resolveTurnSkipAuthority,
+  isRosterPlayerBankrupt,
 } from './canonicalPresence.js'
 import {
   getSharedSkipInFlight,
-  markPendingSharedSkipKey,
-  releaseSharedSkipKey,
-  setSharedSkipInFlight,
   wasAlreadySkipped,
   clearSharedSkipKeyIfStale,
 } from './sharedTurnSkipGuard.js'
+import { turnAttemptKey } from './turnTimerLogic.js'
+import { shouldAttemptPresenceAutoSkip } from './presenceSkipLogic.js'
 
 const DEV = !!import.meta.env.DEV
 
@@ -41,6 +42,7 @@ function devLog(...args) {
  * @param {string|null} opts.turnPlayerId
  * @param {number} opts.turnSeq
  * @param {boolean} opts.gameOver
+ * @param {boolean} [opts.turnLock]
  * @param {(plan: object) => boolean|void} opts.attemptSkipTurn
  * @param {(status: 'waiting'|'skipped'|null) => void} opts.onStatus
  */
@@ -53,6 +55,7 @@ export function useGamePresenceAutoSkip({
   turnPlayerId,
   turnSeq,
   gameOver,
+  turnLock = false,
   attemptSkipTurn,
   onStatus,
 } = {}) {
@@ -60,15 +63,18 @@ export function useGamePresenceAutoSkip({
   const turnPlayerIdRef = useRef(turnPlayerId)
   const turnSeqRef = useRef(turnSeq)
   const gameOverRef = useRef(gameOver)
+  const turnLockRef = useRef(turnLock)
   const attemptSkipRef = useRef(attemptSkipTurn)
   const onStatusRef = useRef(onStatus)
   const lobbyHostIdRef = useRef(lobbyHostId)
   const statusRef = useRef(null)
+  const waitingSinceRef = useRef(null)
 
   useEffect(() => { playersRef.current = players }, [players])
   useEffect(() => { turnPlayerIdRef.current = turnPlayerId }, [turnPlayerId])
   useEffect(() => { turnSeqRef.current = turnSeq }, [turnSeq])
   useEffect(() => { gameOverRef.current = gameOver }, [gameOver])
+  useEffect(() => { turnLockRef.current = !!turnLock }, [turnLock])
   useEffect(() => { attemptSkipRef.current = attemptSkipTurn }, [attemptSkipTurn])
   useEffect(() => { onStatusRef.current = onStatus }, [onStatus])
   useEffect(() => { lobbyHostIdRef.current = lobbyHostId }, [lobbyHostId])
@@ -126,8 +132,28 @@ export function useGamePresenceAutoSkip({
     }).catch(() => {})
     devLog('[presence] heartbeat started canonical=' + presenceId)
 
+    const bump = () => {
+      try {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      } catch {}
+      touchLobbyPlayer({
+        lobbyId,
+        playerId: String(presenceId),
+        allowRecreateIfSeated: true,
+      }).catch(() => {})
+    }
+    const onVis = () => bump()
+    try {
+      document.addEventListener('visibilitychange', onVis)
+      window.addEventListener('focus', onVis)
+    } catch {}
+
     return () => {
       try { stop?.() } catch {}
+      try {
+        document.removeEventListener('visibilitychange', onVis)
+        window.removeEventListener('focus', onVis)
+      } catch {}
     }
   }, [enabled, lobbyId, myUid, rosterIdsKey])
 
@@ -162,6 +188,10 @@ export function useGamePresenceAutoSkip({
       const curTurnSeq = Number(turnSeqRef.current) || 0
       clearSharedSkipKeyIfStale(curTurnId, curTurnSeq)
       if (!curTurnId || roster.length === 0) {
+        setStatus(null)
+        return
+      }
+      if (isRosterPlayerBankrupt(roster, curTurnId)) {
         setStatus(null)
         return
       }
@@ -242,7 +272,30 @@ export function useGamePresenceAutoSkip({
       }
       if (cancelled) return
 
-      if (turnPresent2) {
+      const turnKey = turnAttemptKey(curTurnId, curTurnSeq)
+      const prevWait = waitingSinceRef.current
+      const prevWaitMs =
+        prevWait && prevWait.key === turnKey ? prevWait.at : null
+
+      const decision = shouldAttemptPresenceAutoSkip({
+        turnPresent: turnPresent2,
+        turnLock: !!turnLockRef.current,
+        gameOver: !!gameOverRef.current,
+        amCoordinator,
+        turnPlayerId: curTurnId,
+        turnSeq: curTurnSeq,
+        waitingSinceMs: prevWaitMs,
+        now: Date.now(),
+        inFlight: getSharedSkipInFlight(),
+      })
+
+      if (decision.waitingSinceMs != null) {
+        waitingSinceRef.current = { key: turnKey, at: decision.waitingSinceMs }
+      } else {
+        waitingSinceRef.current = null
+      }
+
+      if (decision.reason === 'present' || decision.reason === 'turn-locked' || decision.reason === 'game-over') {
         if (statusRef.current === 'waiting') {
           devLog('[auto-skip] cancelled player returned')
         }
@@ -250,79 +303,10 @@ export function useGamePresenceAutoSkip({
         return
       }
 
-      setStatus('waiting')
-      if (!amCoordinator) return
-      if (wasAlreadySkipped(curTurnId, curTurnSeq)) return
-
-      devLog('[auto-skip] waiting')
-      setSharedSkipInFlight(true)
-      try {
-        try {
-          await touchLobbyPlayer({
-            lobbyId,
-            playerId: String(presenceId),
-            allowRecreateIfSeated: true,
-          })
-        } catch {}
-
-        let presence2
-        try {
-          presence2 = await listLobbyPresence(lobbyId)
-        } catch {
-          return
-        }
-        if (cancelled) return
-
-        const now2 = Date.now()
-        if (String(turnPlayerIdRef.current || '') !== curTurnId) {
-          devLog('[auto-skip] cancelled player returned')
-          setStatus(null)
-          return
-        }
-        if ((Number(turnSeqRef.current) || 0) !== curTurnSeq) return
-        if (gameOverRef.current) return
-        if (wasAlreadySkipped(curTurnId, curTurnSeq)) return
-
-        if (isTurnPlayerPresent({
-          turnPlayerId: curTurnId,
-          presenceList: presence2,
-          now: now2,
-          thresholdMs: GAME_OFFLINE_THRESHOLD_MS,
-        })) {
-          devLog('[auto-skip] cancelled player returned')
-          setStatus(null)
-          return
-        }
-
-        const auth2 = resolveTurnSkipAuthority({
-          rosterPlayers: roster,
-          presenceList: presence2,
-          now: now2,
-          myUid: presenceId,
-          lobbyHostId: lobbyHostIdRef.current,
-        })
-        if (!auth2.authorized) {
-          devLog('[presence] authority=false')
-          return
-        }
-
-        devLog('[auto-skip] attempt turnSeq=' + curTurnSeq)
-        const ok = attemptSkipRef.current?.({
-          expectedTurnPlayerId: curTurnId,
-          expectedTurnSeq: curTurnSeq,
-          reason: 'AUTO_SKIP_OFFLINE',
-        })
-        if (ok) {
-          // Pending até CAS confirmar em commitGamePatch
-          markPendingSharedSkipKey(curTurnId, curTurnSeq)
-          setStatus('skipped')
-          devLog('[auto-skip] local applied (pending CAS)')
-        } else {
-          releaseSharedSkipKey(curTurnId, curTurnSeq)
-          devLog('[auto-skip] local rejected')
-        }
-      } finally {
-        setSharedSkipInFlight(false)
+      // Ausente: só HUD. Cronômetro do turno é quem avança (evita pular celular “offline”).
+      if (!decision.ok) {
+        setStatus('waiting')
+        if (DEV) devLog('[presence] hud-wait reason=' + decision.reason)
       }
     }
 

@@ -2675,6 +2675,28 @@ img[src*="multiplier"]{
   line-height:1.3;
   color:#aab3c5;
 }
+.hud .score .scoreName{
+  display:flex;
+  align-items:baseline;
+  gap:6px;
+  min-width:0;
+}
+.hud .score .scorePlace{
+  flex:0 0 auto;
+  font-weight:800;
+  font-variant-numeric: tabular-nums;
+  color:#c9d4ee;
+}
+.hud .score .row.is-leader .scorePlace{
+  color:#ffd600;
+}
+.hud .score .row.is-bankrupt{
+  opacity:0.72;
+}
+.hud .score .scorePlayerName{
+  min-width:0;
+  overflow-wrap:anywhere;
+}
 .hud .score .scoreValues{
   display:flex;
   flex-direction:column;
@@ -5248,16 +5270,18 @@ img[src*="multiplier"]{
   .side .hud .game-stats-card{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
-/* BOARD V2 — encaixe-base desktop */
+/* BOARD V2 — encaixe-base desktop
+   Contain clássico (max 100% + ratio 13/9). Size containment no flex item
+   colapsava o tabuleiro (área preta), pior com HUD de 4 jogadores. */
 @media (min-width: 761px) {
   .content { box-sizing: border-box; }
   .content:has(.sg40GameBoard) { gap: 6px; }
 
   .boardWrap:has(.sg40GameBoard) {
-    container-type: size;
     display: flex;
     align-items: center;
     justify-content: center;
+    align-self: stretch;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -5267,22 +5291,13 @@ img[src*="multiplier"]{
 
   .boardWrap .board.sg40GameBoard {
     box-sizing: border-box;
-    flex: 0 0 auto;
-    width: auto;
-    height: 100%;
+    flex: 0 1 auto;
+    --board-ratio: 13 / 9;
+    width: 100%;
+    height: auto;
     max-width: 100%;
     max-height: 100%;
     aspect-ratio: 13 / 9;
-  }
-
-  @supports (height: 1cqh) {
-    .boardWrap .board.sg40GameBoard {
-      height: min(100cqh, calc(100cqw * 9 / 13));
-      width: auto;
-      max-width: 100cqw;
-      max-height: 100cqh;
-      aspect-ratio: 13 / 9;
-    }
   }
 }
 
@@ -5295,23 +5310,17 @@ img[src*="multiplier"]{
   .page .content .boardWrap {
     flex: 1 1 auto; width: 100%; height: 100%;
     min-width: 0; min-height: 0; margin: 0; padding: 0;
-    display: flex; align-items: stretch; justify-content: stretch;
-    overflow: hidden; container-type: size;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
   }
 
   .page .content .boardWrap > .board.sg40GameBoard,
   .page .content .boardWrap > .sg40GameBoard {
-    box-sizing: border-box; flex: 1 1 auto;
-    width: 100%; height: 100%;
-    max-width: none; max-height: none; margin: 0; aspect-ratio: auto;
-  }
-
-  @supports (height: 1cqh) {
-    .page .content .boardWrap > .board.sg40GameBoard,
-    .page .content .boardWrap > .sg40GameBoard {
-      width: 100cqw; height: 100cqh;
-      max-width: 100cqw; max-height: 100cqh; aspect-ratio: auto;
-    }
+    box-sizing: border-box; flex: 0 1 auto;
+    --board-ratio: 13 / 9;
+    width: 100%; height: auto;
+    max-width: 100%; max-height: 100%;
+    margin: 0; aspect-ratio: 13 / 9;
   }
 
   .page .content .boardWrap > .sg40GameBoard .sg40Preview__track,
@@ -5336,10 +5345,13 @@ img[src*="multiplier"]{
     width: var(--side-w); min-width: var(--side-w); max-width: var(--side-w);
     flex: 0 0 var(--side-w); height: 100%;
     display: flex; flex-direction: column; gap: 3px;
-    min-height: 0; overflow: visible; padding-bottom: 8px;
+    min-height: 0; overflow: hidden; padding-bottom: 8px;
   }
   .page .content .side > .hud {
-    flex: 0 0 auto; height: auto; min-height: 0;
+    flex: 1 1 auto; height: auto; min-height: 0;
+    overflow-x: hidden; overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
     display: grid; grid-template-rows: auto auto; align-content: start; gap: 3px;
   }
   .side .hud .panel, .side .hud .score, .side .hud .game-stats-card,
@@ -5364,9 +5376,10 @@ img[src*="multiplier"]{
   .side .hud .score .title { padding: 3px 6px; font-size: clamp(10px, 1vw, 10.5px); }
   .side .hud .score .scorePatrimonioNote { margin: 0; padding: 2px 6px 0; font-size: 9.5px; }
   .side .hud .score .row { padding: 2px 6px; font-size: clamp(10.5px, 1.05vw, 11.5px); }
+  .side .hud .score .scorePlace { font-size: 0.95em; }
 
   .page .content .side .sideSecondary {
-    flex: 1 1 auto; min-height: 0; overflow: visible;
+    flex: 0 0 auto; min-height: 0; overflow: visible;
     display: flex; flex-direction: column; gap: 3px;
   }
   .side .controlsSticky {
@@ -5479,7 +5492,7 @@ img[src*="multiplier"]{
   }
 }
 
-/* SIDEBAR DESKTOP — caber sem scroll (>=1200px landscape) */
+/* SIDEBAR DESKTOP — landscape: HUD/placar rolam; Rolar Dado permanece visível */
 @media (min-width: 1200px) and (orientation: landscape) {
   .side {
     height: 100%;
@@ -5487,10 +5500,19 @@ img[src*="multiplier"]{
     flex-direction: column;
     gap: 4px;
     min-height: 0;
-    overflow: visible;
+    overflow: hidden;
   }
 
-  .side > .hud { flex: 0 0 auto; min-height: 0; }
+  .side > .hud {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
 
   .side .hud .panel.game-stats-card,
   .side .hud .game-stats-card {
@@ -5609,13 +5631,19 @@ img[src*="multiplier"]{
 @media (min-width: 1200px) and (max-width: 1599px) and (orientation: landscape) and (max-height: 700px) {
   .page .content .side {
     gap: 2px;
-    padding-bottom: 10px;
+    padding-bottom: 8px;
     min-height: 0;
-    overflow: visible;
+    overflow: hidden;
   }
 
   .page .content .side > .hud {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
     display: grid;
     grid-template-rows: auto auto;
     align-content: start;
@@ -5850,7 +5878,10 @@ img[src*="multiplier"]{
   }
 
   .page .content .side > .hud {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
     display: grid;
     grid-template-rows: auto auto;
     align-content: start;
@@ -5965,23 +5996,24 @@ img[src*="multiplier"]{
   }
 }
 
-/* BOARD V2 — container query desktop largo */
+/* BOARD V2 — desktop largo: contain 13×9 (sem cqh — evita colapso) */
 @media (min-width: 1200px) and (orientation: landscape) {
   .page .content .boardWrap {
-    container-name: sg-board-stage;
-    container-type: size;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
   }
-}
 
-@container sg-board-stage (min-aspect-ratio: 13 / 9) {
   .page .content .boardWrap > .sg40GameBoard {
     box-sizing: border-box;
-    width: 100cqw;
-    height: 100cqh;
-    max-width: 100cqw;
-    max-height: 100cqh;
-    aspect-ratio: auto;
-    flex: 0 0 auto;
+    --board-ratio: 13 / 9;
+    width: 100%;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: 13 / 9;
+    flex: 0 1 auto;
     margin: 0;
   }
 

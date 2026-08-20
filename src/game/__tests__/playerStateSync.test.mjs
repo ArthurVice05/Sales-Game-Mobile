@@ -16,6 +16,7 @@ import {
   shouldApplyIncomingState,
   applyGamePatchToState,
   isValidCashPatchValue,
+  isAuthoritativeStartState,
 } from '../playerStateSync.js'
 import {
   __resetSharedTurnSkipGuardForTests,
@@ -122,6 +123,15 @@ describe('CASH / MERGE', () => {
     assert.equal(merged.bens, 4000)
     assert.equal(merged.cash, 12000)
     assert.equal(merged.clients, 3)
+  })
+
+  it('10b. bankrupt sticky: delta false não ressuscita falido', () => {
+    const merged = mergePlayerPartial(
+      { id: 'a', cash: 0, bankrupt: true },
+      { bankrupt: false, cash: 12000 }
+    )
+    assert.equal(merged.bankrupt, true)
+    assert.equal(merged.cash, 12000)
   })
 
   it('11. roster parcial não zera jogadores ausentes', () => {
@@ -252,6 +262,30 @@ describe('BASELINE / STALE PATCH', () => {
     assert.equal(cash.found, true)
     assert.equal(cash.cash, 12000)
     assert.notEqual(cash.cash, 0)
+  })
+
+  it('18b. LOCK no início da partida não é START', () => {
+    const players = [
+      { id: 'a', pos: 0 },
+      { id: 'b', pos: 0 },
+    ]
+    assert.equal(
+      isAuthoritativeStartState({
+        kind: 'LOCK',
+        round: 1,
+        players,
+        turnLock: true,
+      }),
+      false
+    )
+    assert.equal(
+      isAuthoritativeStartState({ kind: 'START', round: 1, players }),
+      true
+    )
+    assert.equal(
+      isAuthoritativeStartState({ round: 1, players, gameOver: false }),
+      true
+    )
   })
 })
 

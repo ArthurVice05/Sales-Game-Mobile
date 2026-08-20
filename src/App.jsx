@@ -61,7 +61,7 @@ import {
   DEFAULT_TURN_TIME_SEC,
   normalizeTurnTime,
 } from './game/turnTimeConfig.js'
-import { computeTurnDeadlineAt } from './game/turnTimerLogic.js'
+import { computeTurnDeadlineAt, sanitizeTurnDeadlineOnHandoff } from './game/turnTimerLogic.js'
 import {
   mergePlayersById,
   buildPlayersDeltaById,
@@ -69,6 +69,7 @@ import {
   resolveMyCash,
   planRosterApply,
   shouldApplyIncomingState,
+  isAuthoritativeStartState,
 } from './game/playerStateSync.js'
 
 // Versão do tabuleiro (persistida no JSON da partida)
@@ -333,6 +334,7 @@ export default function App() {
   const [turnDeadlineAt, setTurnDeadlineAt] = useState(null)
   const turnDeadlineAtRef = useRef(turnDeadlineAt)
   useEffect(() => { turnDeadlineAtRef.current = turnDeadlineAt }, [turnDeadlineAt])
+  const prevTurnIdentityRef = useRef({ id: null, seq: 0 })
   const [turnIdx, setTurnIdx] = useState(0)
   const [turnPlayerId, setTurnPlayerId] = useState(null) // ✅ CORREÇÃO: ID do jogador da vez (autoritativo)
   const [roundFlags, setRoundFlags] = useState(new Array(1).fill(false)) // quem já cruzou a casa 1
@@ -344,6 +346,27 @@ export default function App() {
   const [lastRollTurnKey, setLastRollTurnKey] = useState(null)
   // ✅ turnSeq: contador monotônico do turno (1 jogador: 0→1→2…; evita [ROLL_BLOCK])
   const [turnSeq, setTurnSeq] = useState(0)
+
+  // Handoff: se o prazo veio estourado do jogador anterior, recomeça o relógio.
+  useEffect(() => {
+    const prev = prevTurnIdentityRef.current
+    const nextId = turnPlayerId != null ? String(turnPlayerId) : ''
+    const nextSeq = Number(turnSeq) || 0
+    const sanitized = sanitizeTurnDeadlineOnHandoff({
+      prevTurnPlayerId: prev.id,
+      nextTurnPlayerId: nextId,
+      prevTurnSeq: prev.seq,
+      nextTurnSeq: nextSeq,
+      currentDeadlineAt: turnDeadlineAtRef.current,
+      now: Date.now(),
+      turnTimeSec: turnTimeSecRef.current,
+    })
+    prevTurnIdentityRef.current = { id: nextId, seq: nextSeq }
+    if (Number.isFinite(Number(sanitized)) && Number(sanitized) !== Number(turnDeadlineAtRef.current)) {
+      setTurnDeadlineAt(Number(sanitized))
+      turnDeadlineAtRef.current = Number(sanitized)
+    }
+  }, [turnPlayerId, turnSeq])
 
   // ===== Última rolagem do dado (somente apresentação; não entra em regras) =====
   const [lastRollUI, setLastRollUI] = useState(null)
@@ -1006,7 +1029,7 @@ export default function App() {
       if (hasSkipExpect) {
         confirmSharedSkipKey(expectTurnId, expectTurnSeq)
       }
-      return
+      return Promise.resolve()
     }
     
     // Calcula versionamento e timestamp
@@ -1014,6 +1037,7 @@ export default function App() {
     const currentVersion = stateVersionRef.current
     const now = Date.now()
     
+    return new Promise((resolve) => {
     defer(async () => {
       let casLost = false
       try {
@@ -1177,7 +1201,10 @@ export default function App() {
       } catch (e) {
         if (hasSkipExpect) releaseSharedSkipKey(expectTurnId, expectTurnSeq)
         console.warn('[NET] commitGamePatch failed:', e?.message || e)
+      } finally {
+        resolve()
       }
+    })
     })
   }, [netCommit, myUid, DEBUG_LOGS])
   
@@ -1247,15 +1274,7 @@ export default function App() {
 
     const versionIsNumber = (typeof incomingNetVersion === 'number')
 
-    // Detecta START/RESET (mesma heurística do teu código, mas usada ANTES do gate)
-    const heuristicReset = (
-      nr === 1 &&
-      Array.isArray(np) && np.length > 0 &&
-      np.every(p => Number(p?.pos ?? 0) === 0) &&
-      (incomingNetState.gameOver === false || incomingNetState.gameOver == null) &&
-      !incomingNetState.winner
-    )
-    const isStartState = (incomingNetState.kind === 'START') || (incomingNetState.isStartGame === true) || heuristicReset
+    const isStartState = isAuthoritativeStartState(incomingNetState)
 
     let incomingBoardVersion
     try {
@@ -1841,6 +1860,7 @@ export default function App() {
     // ✅ CORREÇÃO MULTIPLAYER: Detectar se é START GAME (snapshot completo) ou ação parcial (delta)
     // ✅ CORREÇÃO: Verifica explicitamente patch.isStartGame primeiro (não depende de safeRound que pode vir de estado antigo)
     const isStartGame = patch.isStartGame === true || (
+      patch.isStartGame !== false &&
       safeRound === 1 && 
       nextTurnIdx === 0 && 
       normalizedPlayers.every(p => Number(p?.pos ?? 0) === 0) &&
@@ -1848,6 +1868,7 @@ export default function App() {
       !winner       // ✅ Garante que não é um jogo antigo
     )
     
+    let patchCommit = Promise.resolve()
     if (isStartGame) {
       // ✅ START GAME: Usa commitRemoteState com snapshot completo (única exceção permitida)
       console.log('[App] broadcastState (START) - versão:', currentVersion, 'turnPlayerId:', safeTurnPlayerId, 'round:', safeRound)
@@ -1910,7 +1931,7 @@ export default function App() {
       const hasStateChange = patchKind === 'TURN' || patchKind === 'LOCK' || patch.round !== undefined || patch.roundFlags !== undefined || patch.gameOver !== undefined || patch.winner !== undefined
       if (!hasPlayerDelta && !hasStateChange) {
         if (DEBUG_LOGS) console.log('[App] broadcastState skipped (no-op)', { actionId, patchKind })
-        return
+        return Promise.resolve()
       }
       
       // ✅ CORREÇÃO MULTIPLAYER: Usa commitGamePatch para fazer merge por delta
@@ -1983,7 +2004,7 @@ export default function App() {
           applyLastRollUI(statePatch.lastRoll)
         }
       }
-      commitGamePatch({
+      patchCommit = commitGamePatch({
         playersDeltaById,
         statePatch
       })
@@ -2027,6 +2048,7 @@ export default function App() {
         bcRef.current?.postMessage?.(syncPayload)
       } catch (e) { console.warn('[App] broadcastState failed:', e) }
     })
+    return patchCommit
   }
 
   function broadcastStart(nextPlayers, configuredMaxRounds = maxRoundsRef.current, configuredTurnTimeSec = turnTimeSecRef.current) {
@@ -2307,6 +2329,7 @@ export default function App() {
     onAction,
     nextTurn,
     skipAbsentTurn,
+    forfeitMatch,
     modalLocks,
   } = useTurnEngine({
     players, setPlayers,
@@ -2355,6 +2378,7 @@ export default function App() {
     turnPlayerId,
     turnSeq,
     gameOver,
+    turnLock: turnLock || !!diceFx,
     attemptSkipTurn: skipAbsentTurn,
     onStatus: setTurnAbsenceStatus,
   })
@@ -2477,7 +2501,8 @@ export default function App() {
   const nextStepIsMyTurn = !gameOver && !me?.bankrupt && isMyTurn && controlsCanRoll && !turnAbsenceStatus && !hostPromotedHint
 
   const onControlsAction = (act) => {
-    // Dado 3D no tabuleiro: atrasa o ROLL do motor até a animação terminar (sem mudar regras).
+    // Dado 3D é só visual. O motor aplica o ROLL na hora — senão o peão
+    // não anda e o host pode passar a vez no meio da animação.
     if (act?.type === 'ROLL' && controlsCanRoll) {
       const steps = Number(act.steps)
       if (!Number.isInteger(steps) || steps < 1 || steps > 6) {
@@ -2488,7 +2513,6 @@ export default function App() {
         console.warn('[dice] ROLL ignorado — animação ainda em andamento')
         return
       }
-      // Gesto do usuário: desbloqueia áudio aqui (antes do overlay montar).
       unlockDiceAudio().catch(() => {})
       diceInFlightRef.current = true
       setIsRollingUI(true)
@@ -2496,11 +2520,15 @@ export default function App() {
       const localKey = `local:${currentTurnKey || turnSeq || Date.now()}`
       diceAnimatedKeysRef.current.add(localKey)
       if (currentTurnKey) diceAnimatedKeysRef.current.add(String(currentTurnKey))
+      setTurnLockBroadcast(true, String(myUid))
+      onAction(act)
       setDiceFx({
         id: localKey,
         steps,
         playerName: meHudLive?.name || meHud?.name || 'Jogador',
-        pendingAction: act,
+        pendingAction: null,
+        expectedTurnPlayerId: String(turnPlayerId),
+        expectedTurnSeq: Number(turnSeq) || 0,
       })
       return
     }
@@ -2519,19 +2547,37 @@ export default function App() {
     setDiceFx(null)
     diceInFlightRef.current = false
 
-    if (pending) {
+    const expectedId = fx?.expectedTurnPlayerId != null ? String(fx.expectedTurnPlayerId) : ''
+    const expectedSeq = Number(fx?.expectedTurnSeq)
+    const liveId = String(turnPlayerId || '')
+    const liveSeq = Number(turnSeq) || 0
+    const stillSameTurn =
+      !!pending &&
+      !!expectedId &&
+      expectedId === liveId &&
+      expectedId === String(myUid || '') &&
+      (!Number.isFinite(expectedSeq) || expectedSeq === liveSeq)
+
+    if (stillSameTurn) {
       try {
         onAction(pending)
       } catch (err) {
         console.error('[dice] falha ao aplicar ROLL após animação', err)
       }
+    } else if (pending) {
+      console.warn('[dice] ROLL descartado — turno mudou durante a animação', {
+        expectedId,
+        liveId,
+        expectedSeq,
+        liveSeq,
+      })
     }
     clearRollingTimeout()
     rollingTimeoutRef.current = setTimeout(() => {
       setIsRollingUI(false)
       rollingTimeoutRef.current = null
     }, 200)
-  }, [clearRollingTimeout, onAction])
+  }, [clearRollingTimeout, onAction, turnPlayerId, turnSeq, myUid])
 
   useEffect(() => {
     handleDiceFxCompleteRef.current = handleDiceFxComplete
@@ -3010,6 +3056,13 @@ export default function App() {
                 type="button"
                 className="btn dark"
                 onClick={async () => {
+                  if (!gameOver && myUid) {
+                    try {
+                      await forfeitMatch()
+                    } catch (error) {
+                      console.warn('[App] Erro ao eliminar jogador ao sair:', error)
+                    }
+                  }
                   if (currentLobbyId && myUid) {
                     try {
                       await leaveRoom({ roomCode: currentLobbyId, playerId: myUid })
